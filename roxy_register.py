@@ -234,7 +234,7 @@ class RoxyBrowser:
         return ok1 or ok2
 
 
-# 工作空间轮询计数器（跨调用保持状态）
+# 浏览器窗口轮询计数器（跨调用保持状态）
 _workspace_round_robin_index = 0
 
 
@@ -291,38 +291,34 @@ async def register_with_roxy(
     if not workspaces:
         log("未找到工作空间，请先在 RoxyBrowser 中创建", "err")
         return None
+    workspace_id = workspaces[0].get("id") or workspaces[0].get("workspaceId")
 
-    # 轮询使用工作空间，避免一直用同一个
+    # 获取所有浏览器窗口，按轮询顺序选择不同窗口（不同代理IP）
+    all_windows = roxy.list_windows(workspace_id)
+    if not all_windows:
+        log("未找到浏览器窗口，请先在 RoxyBrowser 中创建", "err")
+        return None
+
+    # 筛选关闭状态的窗口
+    closed_windows = [w for w in all_windows if w.get("openStatus") == 0]
+    if not closed_windows:
+        log("所有窗口都在使用中，无可用窗口", "err")
+        return None
+
+    # 轮询选择窗口
     global _workspace_round_robin_index
-    ws_idx = _workspace_round_robin_index % len(workspaces)
+    win_idx = _workspace_round_robin_index % len(closed_windows)
     _workspace_round_robin_index += 1
-    chosen_ws = workspaces[ws_idx]
-    workspace_id = chosen_ws.get("id") or chosen_ws.get("workspaceId")
-    ws_name = chosen_ws.get("workspaceName") or chosen_ws.get("name", str(workspace_id))
-    log(f"使用工作空间: {ws_name} (id={workspace_id}) [{ws_idx+1}/{len(workspaces)}]")
+    chosen = closed_windows[win_idx]
+    dir_id = chosen.get("dirId")
+    win_name = chosen.get("windowName", "")
+    log(f"使用窗口: {win_name} [{win_idx+1}/{len(closed_windows)}]")
 
-    # 优先复用已有的关闭状态窗口，避免每次创建新窗口
+    # 随机化指纹 + 清除旧数据
     created_new = False
-    dir_id = None
-    existing_windows = roxy.list_windows(workspace_id)
-    closed_windows = [w for w in existing_windows if w.get("openStatus") == 0]
-    if closed_windows:
-        chosen = _random.choice(closed_windows)
-        dir_id = chosen.get("dirId")
-        log(f"复用已有窗口: {chosen.get('windowName', '')} ({dir_id[:16]}...)")
-        # 随机化指纹 + 清除旧数据
-        roxy.randomize_fingerprint(workspace_id, dir_id)
-        roxy.clear_cache(workspace_id, dir_id)
-        log("已随机化指纹并清除缓存", "ok")
-    else:
-        # 没有可用窗口，创建新的
-        window_name = f"kiro_reg_{int(time.time())}"
-        dir_id = roxy.create_window(workspace_id, window_name, proxy_info=proxy_info)
-        if not dir_id:
-            log("创建浏览器窗口失败!", "err")
-            return None
-        created_new = True
-        log(f"浏览器窗口已创建: {dir_id[:16]}...")
+    roxy.randomize_fingerprint(workspace_id, dir_id)
+    roxy.clear_cache(workspace_id, dir_id)
+    log("已随机化指纹并清除缓存", "ok")
 
     # 打开窗口获取 CDP WebSocket URL
     open_data = roxy.open_window(workspace_id, dir_id, headless=headless)
