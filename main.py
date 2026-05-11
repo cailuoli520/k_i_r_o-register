@@ -1011,10 +1011,25 @@ class App(tk.Tk):
                    command=self._export_json).pack(side="left", padx=5)
         ttk.Button(toolbar, text="删除选中", style="Red.TButton",
                    command=self._delete_selected).pack(side="left", padx=5)
-        ttk.Button(toolbar, text="刷新Token",
+        ttk.Button(toolbar, text="刷新选中",
                    command=self._refresh_selected_token).pack(side="left", padx=5)
+        ttk.Button(toolbar, text="刷新全部",
+                   command=self._refresh_all_tokens).pack(side="left", padx=5)
         ttk.Button(toolbar, text="健康检查", style="Orange.TButton",
                    command=self._health_check).pack(side="left", padx=5)
+
+        toolbar2 = ttk.Frame(tab)
+        toolbar2.pack(fill="x", pady=(0, 4))
+        ttk.Button(toolbar2, text="全选",
+                   command=self._select_all_accounts).pack(side="left", padx=(0, 5))
+        ttk.Button(toolbar2, text="反选",
+                   command=self._invert_selection).pack(side="left", padx=5)
+        ttk.Button(toolbar2, text="复制选中JSON",
+                   command=self._copy_selected_json).pack(side="left", padx=5)
+        ttk.Button(toolbar2, text="复制选中邮箱",
+                   command=self._copy_selected_emails).pack(side="left", padx=5)
+        self.lbl_sel_info = ttk.Label(toolbar2, text="", style="Stats.TLabel")
+        self.lbl_sel_info.pack(side="right")
 
         cfg = load_config()
         ttk.Label(toolbar, text="自动刷新:").pack(side="left", padx=(15, 0))
@@ -1093,6 +1108,9 @@ class App(tk.Tk):
         self.acc_tree.bind("<<TreeviewSelect>>", self._on_acc_select)
         self.acc_tree.bind("<Button-3>", self._on_acc_right_click)
         self.acc_tree.bind("<Double-1>", self._on_acc_double_click)
+        self.acc_tree.bind("<Control-a>", lambda e: self._select_all_accounts())
+        self.acc_tree.bind("<Control-c>", lambda e: self._copy_selected_json())
+        self.acc_tree.bind("<Delete>", lambda e: self._delete_selected())
 
         # Log panel
         self._log_label = ttk.Label(bottom_frame, text="操作日志", style="Stats.TLabel")
@@ -2483,6 +2501,12 @@ class App(tk.Tk):
             self._show_cached_models()
 
     def _on_acc_select(self, event):
+        sel = self.acc_tree.selection()
+        count = len(sel)
+        if count > 0:
+            self.lbl_sel_info.configure(text=f"已选中 {count} 个账号")
+        else:
+            self.lbl_sel_info.configure(text="")
         if self._models_visible.get():
             self._show_cached_models()
 
@@ -2490,36 +2514,220 @@ class App(tk.Tk):
         iid = self.acc_tree.identify_row(event.y)
         if not iid:
             return
-        self.acc_tree.selection_set(iid)
+        if iid not in self.acc_tree.selection():
+            self.acc_tree.selection_set(iid)
+        sel = self.acc_tree.selection()
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label="查看账号密码", command=lambda: self._show_account_password(iid))
+        menu.add_command(label="复制账号 JSON", command=lambda: self._copy_account_json(iid))
         menu.add_command(label="复制邮箱", command=lambda: self._copy_field(iid, "email"))
         menu.add_command(label="复制密码", command=lambda: self._copy_field(iid, "password"))
+        menu.add_command(label="复制 Access Token", command=lambda: self._copy_field(iid, "accessToken"))
         menu.add_separator()
-        menu.add_command(label="删除", command=self._delete_selected)
+        if len(sel) > 1:
+            menu.add_command(label=f"复制选中 {len(sel)} 个账号 JSON", command=self._copy_selected_json)
+            menu.add_command(label=f"复制选中 {len(sel)} 个邮箱", command=self._copy_selected_emails)
+            menu.add_separator()
+        menu.add_command(label="查看账号详情", command=lambda: self._show_account_detail(iid))
+        menu.add_command(label="刷新此账号 Token", command=lambda: self._refresh_single_token(iid))
+        menu.add_separator()
+        menu.add_command(label="全选", command=self._select_all_accounts)
+        menu.add_command(label="反选", command=self._invert_selection)
+        menu.add_separator()
+        menu.add_command(label="删除选中", command=self._delete_selected)
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_acc_double_click(self, event):
         iid = self.acc_tree.identify_row(event.y)
         if iid:
-            self._show_account_password(iid)
+            self._show_account_detail(iid)
 
-    def _show_account_password(self, iid):
-        row = self.conn.execute("SELECT email, password FROM accounts WHERE id=?", (int(iid),)).fetchone()
+    def _show_account_detail(self, iid):
+        row = self.conn.execute("SELECT * FROM accounts WHERE id=?", (int(iid),)).fetchone()
         if not row:
             return
-        email = row["email"] or "(未知)"
-        pwd = row["password"] or "(未保存)"
-        messagebox.showinfo("账号信息", f"邮箱: {email}\n密码: {pwd}")
+        info_lines = [
+            f"ID: {row['id']}",
+            f"邮箱: {row['email'] or '(未知)'}",
+            f"密码: {row['password'] or '(未保存)'}",
+            f"登录方式: {row['provider'] or '-'}",
+            f"认证类型: {row['authMethod'] or '-'}",
+            f"订阅: {format_subscription(row['subscription'])}",
+            f"超额状态: {row['overageStatus'] or '未开启'}",
+            f"用量: {row['currentUsage']}/{row['usageLimit']}",
+            f"Token过期: {row['expiresAt'] or '无'}",
+            f"Region: {row['region'] or '-'}",
+            f"创建时间: {row['createdAt'] or '-'}",
+            f"更新时间: {row['updatedAt'] or '-'}",
+        ]
+        messagebox.showinfo("账号详情", "\n".join(info_lines))
 
     def _copy_field(self, iid, field):
-        if field not in ("email", "password"):
-            return
-        row = self.conn.execute("SELECT email, password FROM accounts WHERE id=?", (int(iid),)).fetchone()
+        row = self.conn.execute("SELECT * FROM accounts WHERE id=?", (int(iid),)).fetchone()
         if row and row[field]:
             self.clipboard_clear()
             self.clipboard_append(row[field])
-            self._log(f"已复制到剪贴板", "success")
+            self._log(f"已复制 {field} 到剪贴板", "success")
+
+    def _account_to_json_dict(self, row):
+        return {
+            "email": row["email"],
+            "password": row["password"] or "",
+            "provider": row["provider"],
+            "authMethod": row["authMethod"],
+            "accessToken": row["accessToken"],
+            "refreshToken": row["refreshToken"],
+            "expiresAt": row["expiresAt"],
+            "clientId": row["clientId"],
+            "clientSecret": row["clientSecret"],
+            "clientIdHash": row["clientIdHash"],
+            "region": row["region"],
+            "profileArn": row["profileArn"],
+            "userId": row["userId"],
+            "subscription": row["subscription"] or "",
+            "usageData": {
+                "usageBreakdownList": [{
+                    "usageLimit": row["usageLimit"],
+                    "currentUsage": row["currentUsage"],
+                    "overageCap": row["overageCap"],
+                    "currentOverages": row["currentOverages"],
+                    "overageCharges": row["overageCharges"],
+                }],
+                "overageConfiguration": {
+                    "overageStatus": row["overageStatus"] or "",
+                },
+            },
+        }
+
+    def _copy_account_json(self, iid):
+        row = self.conn.execute("SELECT * FROM accounts WHERE id=?", (int(iid),)).fetchone()
+        if not row:
+            return
+        data = self._account_to_json_dict(row)
+        text = json.dumps(data, indent=2, ensure_ascii=False)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._log(f"已复制 {row['email']} 的 JSON 到剪贴板", "success")
+
+    def _copy_selected_json(self):
+        sel = self.acc_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选择账号")
+            return
+        accounts = []
+        for iid in sel:
+            row = self.conn.execute("SELECT * FROM accounts WHERE id=?", (int(iid),)).fetchone()
+            if row:
+                accounts.append(self._account_to_json_dict(row))
+        if not accounts:
+            return
+        text = json.dumps(accounts, indent=2, ensure_ascii=False)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._log(f"已复制 {len(accounts)} 个账号 JSON 到剪贴板", "success")
+
+    def _copy_selected_emails(self):
+        sel = self.acc_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选择账号")
+            return
+        emails = []
+        for iid in sel:
+            row = self.conn.execute("SELECT email FROM accounts WHERE id=?", (int(iid),)).fetchone()
+            if row and row["email"]:
+                emails.append(row["email"])
+        if emails:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(emails))
+            self._log(f"已复制 {len(emails)} 个邮箱到剪贴板", "success")
+
+    def _select_all_accounts(self):
+        items = self.acc_tree.get_children()
+        if items:
+            self.acc_tree.selection_set(items)
+            self.lbl_sel_info.configure(text=f"已选中 {len(items)} 个账号")
+
+    def _invert_selection(self):
+        all_items = set(self.acc_tree.get_children())
+        selected = set(self.acc_tree.selection())
+        new_sel = all_items - selected
+        if new_sel:
+            self.acc_tree.selection_set(list(new_sel))
+        else:
+            self.acc_tree.selection_remove(*all_items)
+        count = len(new_sel)
+        self.lbl_sel_info.configure(text=f"已选中 {count} 个账号" if count else "")
+
+    def _refresh_single_token(self, iid):
+        row_id = int(iid)
+        row = self.conn.execute("SELECT * FROM accounts WHERE id=?", (row_id,)).fetchone()
+        if not row:
+            return
+        self._log(f"正在刷新 {row['email']} 的 Token...")
+
+        def _do():
+            at, rt, ea, err = do_refresh_token(row)
+            if at:
+                db_update_token(self.conn, row_id, at, rt, ea)
+                _sync_subscription_after_refresh(self.conn, row, at)
+                updated = self.conn.execute("SELECT * FROM accounts WHERE id=?", (row_id,)).fetchone()
+                sub_display = format_subscription(updated["subscription"]) if updated else "-"
+                self.after(0, lambda: self.acc_tree.set(iid, "expires", ea))
+                self.after(0, lambda: self.acc_tree.set(iid, "status", "有效"))
+                self.after(0, lambda: self.acc_tree.set(iid, "subscription", sub_display))
+                self.after(0, lambda: self._log(f"{row['email']} Token 刷新成功", "success"))
+            else:
+                self.after(0, lambda: self.acc_tree.set(iid, "status", err or "失败"))
+                self.after(0, lambda: self._log(f"{row['email']}: {err}", "error"))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _refresh_all_tokens(self):
+        rows = db_get_all(self.conn)
+        targets = [r for r in rows if r["refreshToken"]]
+        if not targets:
+            messagebox.showinfo("提示", "没有可刷新的账号")
+            return
+        if self.running:
+            return
+        self.running = True
+        self.acc_progress["value"] = 0
+        self.acc_progress["maximum"] = len(targets)
+        self._log(f"正在刷新全部 {len(targets)} 个账号的 Token...")
+
+        def _do():
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            success = 0
+
+            def _refresh_one(r):
+                at, rt, ea, err = do_refresh_token(r)
+                if at:
+                    db_update_token(self.conn, r["id"], at, rt, ea)
+                    _sync_subscription_after_refresh(self.conn, r, at)
+                    return r, True, ea, None
+                return r, False, None, err
+
+            with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
+                futures = {pool.submit(_refresh_one, r): r for r in targets}
+                for i, fut in enumerate(as_completed(futures), 1):
+                    r, ok, ea, err = fut.result()
+                    iid = str(r["id"])
+                    if ok:
+                        updated = self.conn.execute("SELECT * FROM accounts WHERE id=?", (r["id"],)).fetchone()
+                        sub_display = format_subscription(updated["subscription"]) if updated else "-"
+                        self.after(0, lambda i2=iid, e=ea, s=sub_display: (
+                            self.acc_tree.set(i2, "expires", e),
+                            self.acc_tree.set(i2, "status", "有效"),
+                            self.acc_tree.set(i2, "subscription", s),
+                        ))
+                        success += 1
+                    else:
+                        self.after(0, lambda i2=iid: self.acc_tree.set(i2, "status", "失败"))
+                    self.after(0, lambda v=i: self.acc_progress.configure(value=v))
+
+            self.after(0, lambda: self._log(
+                f"全部刷新完成: {success}/{len(targets)} 成功",
+                "success" if success == len(targets) else "warn"))
+            self.running = False
+        threading.Thread(target=_do, daemon=True).start()
 
     def _show_cached_models(self):
         sel = self.acc_tree.selection()
