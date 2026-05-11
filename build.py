@@ -90,7 +90,6 @@ cmd = [
     "--hidden-import=mail_providers",
     "--hidden-import=mail_providers.base",
     "--hidden-import=mail_providers.shiromail",
-    "--hidden-import=mail_providers.tempforward",
     # Collect all from curl_cffi (has native libs)
     "--collect-all=curl_cffi",
     # Data files

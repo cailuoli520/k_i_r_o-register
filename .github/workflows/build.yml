@@ -78,7 +78,6 @@ jobs:
             "--hidden-import=mail_providers",
             "--hidden-import=mail_providers.base",
             "--hidden-import=mail_providers.shiromail",
-            "--hidden-import=mail_providers.tempforward",
             "--hidden-import=roxy_register",
             "--collect-all=curl_cffi"
           ) + $datas + @("main.py")

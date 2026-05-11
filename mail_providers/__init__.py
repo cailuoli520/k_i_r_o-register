@@ -3,7 +3,7 @@
 
 使用方式:
     from mail_providers import get_provider, list_providers
-    provider = get_provider("tempforward", base_url="http://...")
+    provider = get_provider("shiromail", base_url="http://...", api_key="...")
     email = provider.create_mailbox()
     otp = provider.wait_otp(timeout=90)
 
@@ -14,12 +14,10 @@
 """
 from .base import MailProvider
 from .shiromail import ShiroMailProvider
-from .tempforward import TempForwardProvider
 from .yydsmail import YydsMailProvider
 
 PROVIDERS: dict[str, type[MailProvider]] = {
     "shiromail": ShiroMailProvider,
-    "tempforward": TempForwardProvider,
     "yydsmail": YydsMailProvider,
 }
 

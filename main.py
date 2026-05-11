@@ -1349,10 +1349,7 @@ class App(tk.Tk):
         def _on_provider_change(*_):
             display = self._reg_mail_provider.get()
             name = self._reg_provider_name_map.get(display, "shiromail")
-            if name == "tempforward":
-                self._reg_mail_key_entry.configure(state="disabled")
-                self._reg_domain_combo.configure(state="disabled")
-            else:
+            if name == "shiromail":
                 self._reg_mail_key_entry.configure(state="normal")
                 self._reg_domain_combo.configure(state="readonly")
         self._reg_mail_provider.trace_add("write", _on_provider_change)
