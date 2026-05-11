@@ -3111,7 +3111,7 @@ class App(tk.Tk):
                 self.after(0, lambda: self.lbl_batch_stats.configure(text=msg))
                 self.after(0, self._load_accounts_from_db)
             except Exception as exc:
-                self.after(0, lambda: self._blog(f"批量超额异常中断: {exc}", "error"))
+                self.after(0, lambda e=str(exc): self._blog(f"批量超额异常中断: {e}", "error"))
             finally:
                 self.running = False
         threading.Thread(target=_do, daemon=True).start()
