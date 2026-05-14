@@ -90,6 +90,11 @@ cmd = [
     "--hidden-import=mail_providers",
     "--hidden-import=mail_providers.base",
     "--hidden-import=mail_providers.shiromail",
+    "--hidden-import=pystray",
+    "--hidden-import=pystray._win32",
+    "--hidden-import=PIL",
+    "--hidden-import=PIL.Image",
+    "--hidden-import=PIL.ImageDraw",
     # Collect all from curl_cffi (has native libs)
     "--collect-all=curl_cffi",
     # Data files

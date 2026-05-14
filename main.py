@@ -110,6 +110,63 @@ def save_config(cfg):
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+# ─── 主题色板 ────────────────────────────────────────────────────────────────
+THEMES = {
+    "dark": {
+        "bg": "#0f1419",
+        "panel_bg": "#1a2332",
+        "heading_bg": "#243447",
+        "term_bg": "#0a0e14",
+        "border": "#2a3a4f",
+        "fg": "#d8e0e8",
+        "dim": "#7a8693",
+        "accent": "#4ec9ff",
+        "selection": "#1e4d6b",
+        "selection_fg": "#ffffff",
+        "tab_bg": "#1a2332",
+        "tab_active_bg": "#243447",
+        "btn_bg": "#243447",
+        "btn_hover": "#2d4259",
+        "btn_fg": "#d8e0e8",
+        "btn_active_fg": "#ffffff",
+        "btn_color_fg": "#0f1419",
+        "info": "#4ec9ff",
+        "success": "#4ec9b0",
+        "success_hover": "#3aa68f",
+        "warning": "#e6a23c",
+        "warning_hover": "#c98621",
+        "danger": "#f04a4a",
+        "danger_hover": "#c93838",
+    },
+    "light": {
+        "bg": "#f5f7fa",
+        "panel_bg": "#ffffff",
+        "heading_bg": "#eaedf2",
+        "term_bg": "#fafbfc",
+        "border": "#dfe3e8",
+        "fg": "#1f2937",
+        "dim": "#6b7280",
+        "accent": "#2563eb",
+        "selection": "#dbeafe",
+        "selection_fg": "#1e3a8a",
+        "tab_bg": "#eaedf2",
+        "tab_active_bg": "#ffffff",
+        "btn_bg": "#e5e9f0",
+        "btn_hover": "#d8dde6",
+        "btn_fg": "#1f2937",
+        "btn_active_fg": "#0f172a",
+        "btn_color_fg": "#ffffff",
+        "info": "#2563eb",
+        "success": "#10b981",
+        "success_hover": "#059669",
+        "warning": "#f59e0b",
+        "warning_hover": "#d97706",
+        "danger": "#ef4444",
+        "danger_hover": "#dc2626",
+    },
+}
+
+
 # ─── Database Layer ──────────────────────────────────────────────────────────
 
 DB_SCHEMA = """
@@ -882,12 +939,19 @@ class App(tk.Tk):
         self.title("Kiro Pro 账号管理工具 | 仅供学习研究，禁止出售、贩卖、用于商业用途")
         self.geometry("1100x720")
         self.minsize(900, 600)
-        self.configure(bg="#1a1a2e")
 
         self.conn = get_db()
         self.running = False
         self._lock = threading.Lock()
         self._auto_refresh_id = None
+
+        # 主题：从配置加载
+        cfg = load_config()
+        self.theme_name = cfg.get("theme", "dark")
+        self.theme = THEMES.get(self.theme_name, THEMES["dark"])
+        self._themed_text_widgets = []  # 跟踪需要重新着色的 Text/Frame 控件
+
+        self.configure(bg=self.theme["bg"])
 
         self._setup_styles()
         self._build_ui()
@@ -895,95 +959,279 @@ class App(tk.Tk):
         self._refresh_local_status()
         self._start_auto_refresh()
 
+        # 系统托盘
+        self._tray_icon = None
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+
+    # ─── 主题切换 ─────────────────────────────────────────────────
+    def _toggle_theme(self):
+        self.theme_name = "light" if self.theme_name == "dark" else "dark"
+        self.theme = THEMES[self.theme_name]
+        cfg = load_config()
+        cfg["theme"] = self.theme_name
+        save_config(cfg)
+        self._apply_theme()
+
+    def _apply_theme(self):
+        """重新应用当前主题到所有控件"""
+        t = self.theme
+        self.configure(bg=t["bg"])
+        self._setup_styles()
+        # 更新所有跟踪的 Text/Frame
+        for widget, role in self._themed_text_widgets:
+            try:
+                if role == "term":
+                    widget.configure(bg=t["term_bg"], fg=t["term_fg"],
+                                     insertbackground=t["term_fg"])
+                elif role == "panel":
+                    widget.configure(bg=t["panel_bg"], fg=t["fg"],
+                                     insertbackground=t["fg"])
+                elif role == "log":
+                    widget.configure(bg=t["term_bg"], fg=t["dim"],
+                                     insertbackground=t["fg"])
+                elif role == "frame":
+                    widget.configure(bg=t["bg"])
+                elif role == "warn_label":
+                    widget.configure(bg=t["bg"], fg=t["danger"])
+                elif role == "paned":
+                    widget.configure(bg=t["bg"])
+            except Exception:
+                pass
+        # 更新 Text 标签颜色
+        self._reapply_text_tags()
+        # 更新主题切换按钮的图标
+        if hasattr(self, "_theme_btn"):
+            self._theme_btn.configure(text="🌙" if self.theme_name == "dark" else "☀")
+
+    def _reapply_text_tags(self):
+        """重新配置所有 Text 控件的语义标签颜色"""
+        t = self.theme
+        text_widgets = [
+            (getattr(self, "models_text", None),
+             {"title": ("accent", "bold"), "default": ("success", None),
+              "model": ("fg", None), "dim": ("dim", None)}),
+            (getattr(self, "log_text", None),
+             {"info": ("info", None), "success": ("success", None),
+              "error": ("danger", None), "warn": ("warning", None)}),
+            (getattr(self, "status_text", None),
+             {"key": ("accent", None), "val": ("fg", None),
+              "ok": ("success", None), "expired": ("danger", None)}),
+            (getattr(self, "_reg_term", None),
+             {"info": ("info", None), "ok": ("success", None),
+              "err": ("danger", None), "dbg": ("dim", None),
+              "highlight": ("warning", None)}),
+            (getattr(self, "_ml_term", None),
+             {"info": ("info", None), "ok": ("success", None),
+              "err": ("danger", None), "dbg": ("dim", None)}),
+        ]
+        for widget, tags in text_widgets:
+            if widget is None:
+                continue
+            for tag, (color_key, weight) in tags.items():
+                cfg = {"foreground": t.get(color_key, t["fg"])}
+                if weight == "bold":
+                    cfg["font"] = ("Consolas", 9, "bold")
+                try:
+                    widget.tag_configure(tag, **cfg)
+                except Exception:
+                    pass
+
     def _setup_styles(self):
+        t = self.theme
         style = ttk.Style(self)
         style.theme_use("clam")
 
-        style.configure(".", background="#1a1a2e", foreground="#e0e0e0")
-        style.configure("TFrame", background="#1a1a2e")
-        style.configure("TLabelframe", background="#1a1a2e", foreground="#e0e0e0")
-        style.configure("TLabelframe.Label", background="#1a1a2e", foreground="#00d2ff",
+        style.configure(".", background=t["bg"], foreground=t["fg"])
+        style.configure("TFrame", background=t["bg"])
+        style.configure("TLabelframe", background=t["bg"], foreground=t["fg"],
+                        bordercolor=t["border"])
+        style.configure("TLabelframe.Label", background=t["bg"], foreground=t["accent"],
                         font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("TLabel", background="#1a1a2e", foreground="#e0e0e0",
+        style.configure("TLabel", background=t["bg"], foreground=t["fg"],
                         font=("Microsoft YaHei UI", 9))
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 14, "bold"), foreground="#00d2ff")
-        style.configure("Stats.TLabel", font=("Microsoft YaHei UI", 9), foreground="#b0b0b0")
-        style.configure("Status.TLabel", font=("Consolas", 9), foreground="#8b949e")
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 14, "bold"),
+                        foreground=t["accent"])
+        style.configure("Stats.TLabel", font=("Microsoft YaHei UI", 9), foreground=t["dim"])
+        style.configure("Status.TLabel", font=("Consolas", 9), foreground=t["dim"])
 
-        style.configure("TButton", font=("Microsoft YaHei UI", 9), padding=(10, 5))
+        style.configure("TButton", font=("Microsoft YaHei UI", 9), padding=(12, 6),
+                        borderwidth=0, focusthickness=0)
         style.map("TButton",
-            background=[("active", "#16213e"), ("!active", "#0f3460")],
-            foreground=[("active", "#ffffff"), ("!active", "#e0e0e0")],
+            background=[("active", t["btn_hover"]), ("!active", t["btn_bg"])],
+            foreground=[("active", t["btn_active_fg"]), ("!active", t["btn_fg"])],
         )
-        style.configure("Green.TButton", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("Green.TButton", font=("Microsoft YaHei UI", 9, "bold"),
+                        borderwidth=0)
         style.map("Green.TButton",
-            background=[("active", "#1b8a5a"), ("!active", "#2ecc71")],
-            foreground=[("active", "#ffffff"), ("!active", "#1a1a2e")],
+            background=[("active", t["success_hover"]), ("!active", t["success"])],
+            foreground=[("active", "#ffffff"), ("!active", t["btn_color_fg"])],
         )
-        style.configure("Orange.TButton", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("Orange.TButton", font=("Microsoft YaHei UI", 9, "bold"),
+                        borderwidth=0)
         style.map("Orange.TButton",
-            background=[("active", "#d68910"), ("!active", "#f39c12")],
-            foreground=[("active", "#ffffff"), ("!active", "#1a1a2e")],
+            background=[("active", t["warning_hover"]), ("!active", t["warning"])],
+            foreground=[("active", "#ffffff"), ("!active", t["btn_color_fg"])],
         )
-        style.configure("Red.TButton", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("Red.TButton", font=("Microsoft YaHei UI", 9, "bold"),
+                        borderwidth=0)
         style.map("Red.TButton",
-            background=[("active", "#c0392b"), ("!active", "#f85149")],
-            foreground=[("active", "#ffffff"), ("!active", "#1a1a2e")],
+            background=[("active", t["danger_hover"]), ("!active", t["danger"])],
+            foreground=[("active", "#ffffff"), ("!active", t["btn_color_fg"])],
+        )
+        # 主题切换按钮（朴素，无背景色变化）
+        style.configure("Theme.TButton", font=("Microsoft YaHei UI", 11),
+                        padding=(8, 4), borderwidth=0)
+        style.map("Theme.TButton",
+            background=[("active", t["panel_bg"]), ("!active", t["bg"])],
+            foreground=[("active", t["accent"]), ("!active", t["fg"])],
         )
 
         style.configure("Treeview",
-            background="#16213e", foreground="#e0e0e0", fieldbackground="#16213e",
-            font=("Consolas", 9), rowheight=24,
+            background=t["panel_bg"], foreground=t["fg"], fieldbackground=t["panel_bg"],
+            font=("Consolas", 9), rowheight=26, borderwidth=0,
         )
         style.configure("Treeview.Heading",
-            background="#0f3460", foreground="#00d2ff",
-            font=("Microsoft YaHei UI", 9, "bold"),
+            background=t["heading_bg"], foreground=t["accent"],
+            font=("Microsoft YaHei UI", 9, "bold"), borderwidth=0,
         )
-        style.map("Treeview", background=[("selected", "#1a5276")])
+        style.map("Treeview", background=[("selected", t["selection"])],
+                              foreground=[("selected", t["selection_fg"])])
 
-        style.configure("TNotebook", background="#1a1a2e")
-        style.configure("TNotebook.Tab", font=("Microsoft YaHei UI", 10), padding=(15, 5))
+        style.configure("TNotebook", background=t["bg"], borderwidth=0, tabmargins=(0, 6, 0, 0))
+        style.configure("TNotebook.Tab", font=("Microsoft YaHei UI", 10),
+                        padding=(18, 8), borderwidth=0)
         style.map("TNotebook.Tab",
-            background=[("selected", "#0f3460"), ("!selected", "#16213e")],
-            foreground=[("selected", "#00d2ff"), ("!selected", "#8b949e")],
+            background=[("selected", t["tab_active_bg"]), ("!selected", t["tab_bg"])],
+            foreground=[("selected", t["accent"]), ("!selected", t["dim"])],
         )
         style.configure("TEntry",
-            fieldbackground="#16213e", foreground="#e0e0e0", insertcolor="#e0e0e0",
-            font=("Consolas", 9))
+            fieldbackground=t["panel_bg"], foreground=t["fg"], insertcolor=t["fg"],
+            font=("Consolas", 9), borderwidth=1, bordercolor=t["border"])
         style.configure("TCombobox",
-            fieldbackground="#16213e", foreground="#e0e0e0",
-            background="#0f3460", arrowcolor="#00d2ff",
-            font=("Microsoft YaHei UI", 9))
+            fieldbackground=t["panel_bg"], foreground=t["fg"],
+            background=t["btn_bg"], arrowcolor=t["accent"],
+            font=("Microsoft YaHei UI", 9), borderwidth=0)
         style.map("TCombobox",
-            fieldbackground=[("readonly", "#16213e"), ("disabled", "#111122")],
-            foreground=[("readonly", "#e0e0e0"), ("disabled", "#666666")],
-            selectbackground=[("readonly", "#1a5276")],
-            selectforeground=[("readonly", "#ffffff")],
+            fieldbackground=[("readonly", t["panel_bg"]), ("disabled", t["bg"])],
+            foreground=[("readonly", t["fg"]), ("disabled", t["dim"])],
+            selectbackground=[("readonly", t["selection"])],
+            selectforeground=[("readonly", t["selection_fg"])],
         )
-        self.option_add("*TCombobox*Listbox.background", "#16213e")
-        self.option_add("*TCombobox*Listbox.foreground", "#e0e0e0")
-        self.option_add("*TCombobox*Listbox.selectBackground", "#1a5276")
-        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
-        style.configure("TCheckbutton", background="#1a1a2e", foreground="#e0e0e0",
+        self.option_add("*TCombobox*Listbox.background", t["panel_bg"])
+        self.option_add("*TCombobox*Listbox.foreground", t["fg"])
+        self.option_add("*TCombobox*Listbox.selectBackground", t["selection"])
+        self.option_add("*TCombobox*Listbox.selectForeground", t["selection_fg"])
+        style.configure("TCheckbutton", background=t["bg"], foreground=t["fg"],
             font=("Microsoft YaHei UI", 9))
         style.map("TCheckbutton",
-            background=[("active", "#1a1a2e"), ("!active", "#1a1a2e")],
-            foreground=[("active", "#00d2ff"), ("!active", "#e0e0e0")],
-            indicatorcolor=[("selected", "#00d2ff"), ("!selected", "#16213e")],
+            background=[("active", t["bg"]), ("!active", t["bg"])],
+            foreground=[("active", t["accent"]), ("!active", t["fg"])],
+            indicatorcolor=[("selected", t["accent"]), ("!selected", t["panel_bg"])],
         )
-        style.configure("Horizontal.TProgressbar", troughcolor="#16213e", background="#2ecc71")
+        style.configure("Horizontal.TProgressbar",
+                        troughcolor=t["panel_bg"], background=t["success"],
+                        borderwidth=0, lightcolor=t["success"], darkcolor=t["success"])
+
+    # ─── 系统托盘 ─────────────────────────────────────────────────
+    def _on_close_window(self):
+        """关闭按钮 → 询问是否最小化到托盘"""
+        from tkinter import messagebox
+        choice = messagebox.askyesnocancel(
+            "退出确认",
+            "是否最小化到系统托盘?\n\n是 - 最小化到托盘\n否 - 退出程序",
+            icon="question",
+        )
+        if choice is None:
+            return
+        if choice:
+            self._minimize_to_tray()
+        else:
+            self._quit_app()
+
+    def _minimize_to_tray(self):
+        """隐藏主窗口并在系统托盘显示图标"""
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except ImportError:
+            from tkinter import messagebox
+            messagebox.showwarning("提示", "未安装 pystray/Pillow，使用普通最小化")
+            self.iconify()
+            return
+
+        if self._tray_icon is None:
+            # 生成简单的托盘图标
+            img = Image.new("RGB", (64, 64), self.theme["accent"])
+            d = ImageDraw.Draw(img)
+            d.ellipse((10, 10, 54, 54), fill=self.theme["bg"])
+            d.text((20, 20), "K", fill=self.theme["accent"])
+
+            menu = pystray.Menu(
+                pystray.MenuItem("显示主窗口", self._tray_show, default=True),
+                pystray.MenuItem("退出", self._tray_exit),
+            )
+            self._tray_icon = pystray.Icon("KiroProManager", img, "Kiro Pro 账号管理", menu)
+            threading.Thread(target=self._tray_icon.run, daemon=True).start()
+
+        self.withdraw()
+
+    def _tray_show(self, icon=None, item=None):
+        self.after(0, self._restore_window)
+
+    def _restore_window(self):
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _tray_exit(self, icon=None, item=None):
+        if self._tray_icon:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+        self.after(0, self._quit_app)
+
+    def _quit_app(self):
+        if self._tray_icon:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        self.destroy()
 
     def _build_ui(self):
+        t = self.theme
         header = ttk.Frame(self, padding=(20, 12))
         header.pack(fill="x")
         ttk.Label(header, text="Kiro Pro 账号管理工具", style="Title.TLabel").pack(side="left")
-        self.lbl_db_path = ttk.Label(header, text=f"数据库: {DB_PATH.name}", style="Stats.TLabel")
-        self.lbl_db_path.pack(side="right")
 
-        warn_frame = tk.Frame(self, bg="#1a1a2e")
+        # 右侧: 主题切换 + 数据库路径
+        right_box = ttk.Frame(header)
+        right_box.pack(side="right")
+        self.lbl_db_path = ttk.Label(right_box, text=f"数据库: {DB_PATH.name}", style="Stats.TLabel")
+        self.lbl_db_path.pack(side="right", padx=(8, 0))
+        self._theme_btn = ttk.Button(right_box,
+                                     text="🌙" if self.theme_name == "dark" else "☀",
+                                     style="Theme.TButton",
+                                     width=3, command=self._toggle_theme)
+        self._theme_btn.pack(side="right", padx=4)
+        self._minimize_btn = ttk.Button(right_box, text="—",
+                                        style="Theme.TButton",
+                                        width=3, command=self._minimize_to_tray)
+        self._minimize_btn.pack(side="right", padx=4)
+
+        warn_frame = tk.Frame(self, bg=t["bg"])
         warn_frame.pack(fill="x", padx=20)
-        tk.Label(warn_frame, text="⚠ 本程序仅供学习研究使用，严禁出售、贩卖、传播或用于任何商业用途，违者后果自负",
-                 bg="#1a1a2e", fg="#f85149", font=("Microsoft YaHei UI", 9, "bold")).pack(anchor="w")
+        warn_label = tk.Label(warn_frame,
+                 text="⚠ 本程序仅供学习研究使用，严禁出售、贩卖、传播或用于任何商业用途，违者后果自负",
+                 bg=t["bg"], fg=t["danger"], font=("Microsoft YaHei UI", 9, "bold"))
+        warn_label.pack(anchor="w")
+        self._themed_text_widgets.append((warn_frame, "frame"))
+        self._themed_text_widgets.append((warn_label, "warn_label"))
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=15, pady=(0, 10))
@@ -1060,7 +1308,8 @@ class App(tk.Tk):
 
         # PanedWindow: top = account tree, bottom = models + log
         paned = tk.PanedWindow(tab, orient=tk.VERTICAL, sashwidth=6,
-                               bg="#1a1a2e", sashrelief="flat", opaqueresize=False)
+                               bg=self.theme["bg"], sashrelief="flat", opaqueresize=False)
+        self._themed_text_widgets.append((paned, "paned"))
         paned.pack(fill="both", expand=True)
 
         # Top pane: account tree
@@ -1100,18 +1349,21 @@ class App(tk.Tk):
                    command=self._query_selected_models).pack(side="left", padx=8)
 
         self.models_frame = ttk.Frame(bottom_frame)
-        self.models_text = tk.Text(self.models_frame, bg="#0d1117", fg="#e0e0e0",
-                                   font=("Consolas", 9), insertbackground="#e0e0e0",
-                                   relief="flat", wrap="word", height=8)
+        t = self.theme
+        self.models_text = tk.Text(self.models_frame, bg=t["term_bg"], fg=t["fg"],
+                                   font=("Consolas", 9), insertbackground=t["fg"],
+                                   relief="flat", wrap="word", height=8,
+                                   highlightthickness=0, borderwidth=0)
         models_scroll = ttk.Scrollbar(self.models_frame, orient="vertical",
                                       command=self.models_text.yview)
         self.models_text.configure(yscrollcommand=models_scroll.set)
         self.models_text.pack(side="left", fill="both", expand=True)
         models_scroll.pack(side="right", fill="y")
-        self.models_text.tag_configure("title", foreground="#00d2ff", font=("Consolas", 9, "bold"))
-        self.models_text.tag_configure("default", foreground="#2ecc71")
-        self.models_text.tag_configure("model", foreground="#e0e0e0")
-        self.models_text.tag_configure("dim", foreground="#8b949e")
+        self.models_text.tag_configure("title", foreground=t["accent"], font=("Consolas", 9, "bold"))
+        self.models_text.tag_configure("default", foreground=t["success"])
+        self.models_text.tag_configure("model", foreground=t["fg"])
+        self.models_text.tag_configure("dim", foreground=t["dim"])
+        self._themed_text_widgets.append((self.models_text, "panel"))
 
         self.acc_tree.bind("<<TreeviewSelect>>", self._on_acc_select)
         self.acc_tree.bind("<Button-3>", self._on_acc_right_click)
@@ -1126,18 +1378,20 @@ class App(tk.Tk):
         log_frame = ttk.Frame(bottom_frame)
         log_frame.pack(fill="both", expand=True)
 
-        self.log_text = tk.Text(log_frame, bg="#0d1117", fg="#8b949e",
-                                font=("Consolas", 9), insertbackground="#e0e0e0",
-                                relief="flat", wrap="word", height=4)
+        self.log_text = tk.Text(log_frame, bg=t["term_bg"], fg=t["dim"],
+                                font=("Consolas", 9), insertbackground=t["fg"],
+                                relief="flat", wrap="word", height=4,
+                                highlightthickness=0, borderwidth=0)
         log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.pack(side="left", fill="both", expand=True)
         log_scroll.pack(side="right", fill="y")
 
-        self.log_text.tag_configure("info", foreground="#58a6ff")
-        self.log_text.tag_configure("success", foreground="#2ecc71")
-        self.log_text.tag_configure("error", foreground="#f85149")
-        self.log_text.tag_configure("warn", foreground="#f39c12")
+        self.log_text.tag_configure("info", foreground=t["info"])
+        self.log_text.tag_configure("success", foreground=t["success"])
+        self.log_text.tag_configure("error", foreground=t["danger"])
+        self.log_text.tag_configure("warn", foreground=t["warning"])
+        self._themed_text_widgets.append((self.log_text, "log"))
 
         paned.add(bottom_frame, minsize=80)
 
@@ -1149,14 +1403,17 @@ class App(tk.Tk):
         info_frame = ttk.LabelFrame(tab, text="当前 Kiro 本地 Token", padding=15)
         info_frame.pack(fill="x", pady=(0, 10))
 
-        self.status_text = tk.Text(info_frame, bg="#0d1117", fg="#e0e0e0",
+        t = self.theme
+        self.status_text = tk.Text(info_frame, bg=t["term_bg"], fg=t["fg"],
                                    font=("Consolas", 10), relief="flat",
-                                   wrap="word", height=12)
+                                   wrap="word", height=12,
+                                   highlightthickness=0, borderwidth=0)
         self.status_text.pack(fill="both", expand=True)
-        self.status_text.tag_configure("key", foreground="#00d2ff")
-        self.status_text.tag_configure("val", foreground="#e0e0e0")
-        self.status_text.tag_configure("ok", foreground="#2ecc71")
-        self.status_text.tag_configure("expired", foreground="#f85149")
+        self.status_text.tag_configure("key", foreground=t["accent"])
+        self.status_text.tag_configure("val", foreground=t["fg"])
+        self.status_text.tag_configure("ok", foreground=t["success"])
+        self.status_text.tag_configure("expired", foreground=t["danger"])
+        self._themed_text_widgets.append((self.status_text, "panel"))
 
         btn_frame = ttk.Frame(tab)
         btn_frame.pack(fill="x", pady=10)
@@ -1228,7 +1485,7 @@ class App(tk.Tk):
         current_provider = cfg.get("mail_provider", "shiromail")
         self._reg_mail_provider.set(self._reg_provider_display_map.get(current_provider, "ShiroMail"))
         self._reg_provider_combo.pack(side="left", padx=4)
-        ttk.Label(row0, text="(切换后需重新填写配置)", foreground="#8b949e").pack(side="left", padx=4)
+        ttk.Label(row0, text="(切换后需重新填写配置)", style="Stats.TLabel").pack(side="left", padx=4)
 
         row1 = ttk.Frame(mail_frame)
         row1.pack(fill="x", pady=2)
@@ -1267,14 +1524,14 @@ class App(tk.Tk):
         ttk.Label(cdk_row, text="CDK码:", width=8).pack(side="left")
         self._reg_cdk_code = tk.StringVar(value=cfg.get("cdk_code", ""))
         ttk.Entry(cdk_row, textvariable=self._reg_cdk_code, width=45).pack(side="left", padx=4)
-        ttk.Label(cdk_row, text="(格式: US-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX)", foreground="#8b949e").pack(side="left", padx=4)
+        ttk.Label(cdk_row, text="(格式: US-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX)", style="Stats.TLabel").pack(side="left", padx=4)
 
         yc_row = ttk.Frame(cdk_frame)
         yc_row.pack(fill="x", pady=2)
         ttk.Label(yc_row, text="YesCaptcha:", width=8).pack(side="left")
         self._reg_yescaptcha_key = tk.StringVar(value=cfg.get("yescaptcha_key", ""))
         ttk.Entry(yc_row, textvariable=self._reg_yescaptcha_key, width=45).pack(side="left", padx=4)
-        ttk.Label(yc_row, text="(API Key, 用于 hCaptcha 自动求解)", foreground="#8b949e").pack(side="left", padx=4)
+        ttk.Label(yc_row, text="(API Key, 用于 hCaptcha 自动求解)", style="Stats.TLabel").pack(side="left", padx=4)
 
         # RoxyBrowser 指纹浏览器配置
         roxy_row = ttk.Frame(cdk_frame)
@@ -1282,7 +1539,7 @@ class App(tk.Tk):
         ttk.Label(roxy_row, text="Roxy Key:", width=8).pack(side="left")
         self._reg_roxy_key = tk.StringVar(value=cfg.get("roxy_api_key", ""))
         ttk.Entry(roxy_row, textvariable=self._reg_roxy_key, width=45).pack(side="left", padx=4)
-        ttk.Label(roxy_row, text="(RoxyBrowser API Key, 勾选'指纹浏览器'时使用)", foreground="#8b949e").pack(side="left", padx=4)
+        ttk.Label(roxy_row, text="(RoxyBrowser API Key, 勾选'指纹浏览器'时使用)", style="Stats.TLabel").pack(side="left", padx=4)
 
         # 值变化时自动保存
         def _save_mail_config(*_):
@@ -1313,19 +1570,22 @@ class App(tk.Tk):
         term_frame = ttk.Frame(tab)
         term_frame.pack(fill="both", expand=True)
 
-        self._reg_term = tk.Text(term_frame, bg="#0d1117", fg="#c9d1d9",
-                                 font=("Consolas", 10), insertbackground="#c9d1d9",
-                                 relief="flat", wrap="word")
+        t = self.theme
+        self._reg_term = tk.Text(term_frame, bg=t["term_bg"], fg=t["fg"],
+                                 font=("Consolas", 10), insertbackground=t["fg"],
+                                 relief="flat", wrap="word",
+                                 highlightthickness=0, borderwidth=0)
         term_scroll = ttk.Scrollbar(term_frame, orient="vertical", command=self._reg_term.yview)
         self._reg_term.configure(yscrollcommand=term_scroll.set)
         self._reg_term.pack(side="left", fill="both", expand=True)
         term_scroll.pack(side="right", fill="y")
 
-        self._reg_term.tag_configure("info", foreground="#58a6ff")
-        self._reg_term.tag_configure("ok", foreground="#2ecc71")
-        self._reg_term.tag_configure("err", foreground="#f85149")
-        self._reg_term.tag_configure("dbg", foreground="#8b949e")
-        self._reg_term.tag_configure("highlight", foreground="#f0e68c")
+        self._reg_term.tag_configure("info", foreground=t["info"])
+        self._reg_term.tag_configure("ok", foreground=t["success"])
+        self._reg_term.tag_configure("err", foreground=t["danger"])
+        self._reg_term.tag_configure("dbg", foreground=t["dim"])
+        self._reg_term.tag_configure("highlight", foreground=t["warning"])
+        self._themed_text_widgets.append((self._reg_term, "term"))
 
         # Queue for thread-safe log delivery
         self._reg_queue = queue.Queue()
@@ -1929,17 +2189,21 @@ class App(tk.Tk):
         term_frame = ttk.Frame(tab)
         term_frame.pack(fill="both", expand=True)
 
-        self._ml_term = tk.Text(term_frame, bg="#0d1117", fg="#c9d1d9",
-                                font=("Consolas", 9), wrap="word", height=15)
+        t = self.theme
+        self._ml_term = tk.Text(term_frame, bg=t["term_bg"], fg=t["fg"],
+                                font=("Consolas", 9), wrap="word", height=15,
+                                relief="flat", highlightthickness=0, borderwidth=0,
+                                insertbackground=t["fg"])
         ml_scroll = ttk.Scrollbar(term_frame, orient="vertical", command=self._ml_term.yview)
         self._ml_term.configure(yscrollcommand=ml_scroll.set)
         self._ml_term.pack(side="left", fill="both", expand=True)
         ml_scroll.pack(side="right", fill="y")
 
-        self._ml_term.tag_configure("info", foreground="#58a6ff")
-        self._ml_term.tag_configure("ok", foreground="#2ecc71")
-        self._ml_term.tag_configure("err", foreground="#f85149")
-        self._ml_term.tag_configure("dbg", foreground="#8b949e")
+        self._ml_term.tag_configure("info", foreground=t["info"])
+        self._ml_term.tag_configure("ok", foreground=t["success"])
+        self._ml_term.tag_configure("err", foreground=t["danger"])
+        self._ml_term.tag_configure("dbg", foreground=t["dim"])
+        self._themed_text_widgets.append((self._ml_term, "term"))
 
         self._ml_queue = queue.Queue()
         self._ml_running = False
@@ -2737,7 +3001,8 @@ class App(tk.Tk):
         win = tk.Toplevel(self)
         win.title("总账号详情分析")
         win.geometry("780x620")
-        win.configure(bg="#1a1a2e")
+        t = self.theme
+        win.configure(bg=t["bg"])
 
         # 顶部标题
         header = ttk.Frame(win, padding=(16, 12, 16, 8))
@@ -2747,23 +3012,24 @@ class App(tk.Tk):
                   style="Stats.TLabel").pack(side="right")
 
         # 统计内容
-        text = tk.Text(win, bg="#0d1117", fg="#e0e0e0",
-                       font=("Consolas", 10), insertbackground="#e0e0e0",
-                       relief="flat", wrap="word", padx=16, pady=12)
+        text = tk.Text(win, bg=t["term_bg"], fg=t["fg"],
+                       font=("Consolas", 10), insertbackground=t["fg"],
+                       relief="flat", wrap="word", padx=16, pady=12,
+                       highlightthickness=0, borderwidth=0)
         scrollbar = ttk.Scrollbar(win, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=scrollbar.set)
         text.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=(0, 8))
         scrollbar.pack(side="right", fill="y", pady=(0, 8))
 
-        text.tag_configure("h1", foreground="#00d2ff", font=("Consolas", 12, "bold"),
+        text.tag_configure("h1", foreground=t["accent"], font=("Consolas", 12, "bold"),
                            spacing1=8, spacing3=4)
-        text.tag_configure("k", foreground="#8b949e")
-        text.tag_configure("v", foreground="#e0e0e0", font=("Consolas", 10, "bold"))
-        text.tag_configure("ok", foreground="#2ecc71", font=("Consolas", 10, "bold"))
-        text.tag_configure("warn", foreground="#f1c40f", font=("Consolas", 10, "bold"))
-        text.tag_configure("err", foreground="#e74c3c", font=("Consolas", 10, "bold"))
-        text.tag_configure("dim", foreground="#5d6675")
-        text.tag_configure("bar", foreground="#00d2ff")
+        text.tag_configure("k", foreground=t["dim"])
+        text.tag_configure("v", foreground=t["fg"], font=("Consolas", 10, "bold"))
+        text.tag_configure("ok", foreground=t["success"], font=("Consolas", 10, "bold"))
+        text.tag_configure("warn", foreground=t["warning"], font=("Consolas", 10, "bold"))
+        text.tag_configure("err", foreground=t["danger"], font=("Consolas", 10, "bold"))
+        text.tag_configure("dim", foreground=t["dim"])
+        text.tag_configure("bar", foreground=t["accent"])
 
         total = len(rows)
 

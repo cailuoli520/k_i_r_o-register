@@ -79,6 +79,11 @@ jobs:
             "--hidden-import=mail_providers.base",
             "--hidden-import=mail_providers.shiromail",
             "--hidden-import=roxy_register",
+            "--hidden-import=pystray",
+            "--hidden-import=pystray._win32",
+            "--hidden-import=PIL",
+            "--hidden-import=PIL.Image",
+            "--hidden-import=PIL.ImageDraw",
             "--collect-all=curl_cffi"
           ) + $datas + @("main.py")
 
