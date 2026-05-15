@@ -25,28 +25,64 @@ def log(msg, level='info'):
     print(f'[{ts}] [{level.upper():5s}] {msg}')
 
 
+def _http_request(method, url, headers=None, json_body=None, timeout=30):
+    """
+    统一的 HTTP 请求 helper。优先 curl_cffi (Chrome120 指纹) 绕过 SSL 拦截，
+    失败回退 requests。返回 (status_code, json_or_text) 或抛异常。
+    """
+    last_err = None
+    # 1. curl_cffi
+    try:
+        from curl_cffi import requests as _creq
+        r = _creq.request(method.upper(), url, headers=headers, json=json_body,
+                          timeout=timeout, impersonate="chrome120", verify=False)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, r.text
+    except ImportError:
+        pass
+    except Exception as e:
+        last_err = e
+
+    # 2. requests 回退
+    try:
+        if method.upper() == "GET":
+            r = requests.get(url, headers=headers, timeout=timeout, verify=False)
+        else:
+            r = requests.post(url, headers=headers, json=json_body,
+                              timeout=timeout, verify=False)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, r.text
+    except Exception as e:
+        if last_err:
+            raise last_err
+        raise e
+
+
 def efun_redeem(code, log=log):
     """兑换 CDK 获取虚拟信用卡信息"""
     try:
-        resp = requests.post(
+        status, data = _http_request(
+            "POST",
             f"{EFUNCARD_API}/redeem",
             headers={
                 "Authorization": f"Bearer {EFUNCARD_TOKEN}",
                 "Content-Type": "application/json",
             },
-            json={"code": code},
-            timeout=(10, 90),
-            verify=False,
+            json_body={"code": code},
+            timeout=90,
         )
-        data = resp.json()
-        if data.get("success"):
+        if isinstance(data, dict) and data.get("success"):
             card = data["data"]
             log(f"卡片兑换成功: *{card['lastFour']} ({card['status']})", "ok")
             log(f"  有效期至: {card.get('autoCancelAt', 'N/A')}", "info")
             return card
-        else:
-            log(f"兑换响应: {data.get('error')}", "warn")
-            return None
+        err = data.get("error") if isinstance(data, dict) else str(data)[:120]
+        log(f"兑换响应: {err}", "warn")
+        return None
     except Exception as e:
         log(f"兑换请求异常: {e}", "warn")
         return None
@@ -55,19 +91,19 @@ def efun_redeem(code, log=log):
 def efun_query(code, log=log):
     """查询已兑换卡片信息"""
     try:
-        resp = requests.get(
+        status, data = _http_request(
+            "GET",
             f"{EFUNCARD_API}/cards/query/{code}",
             headers={
                 "Authorization": f"Bearer {EFUNCARD_TOKEN}",
                 "Content-Type": "application/json",
             },
             timeout=30,
-            verify=False,
         )
-        data = resp.json()
-        if data.get("success"):
+        if isinstance(data, dict) and data.get("success"):
             return data["data"]
-        log(f"查询响应: {data.get('error')}", "warn")
+        err = data.get("error") if isinstance(data, dict) else str(data)[:120]
+        log(f"查询响应: {err}", "warn")
         return None
     except Exception as e:
         log(f"查询请求异常: {e}", "warn")
@@ -77,23 +113,21 @@ def efun_query(code, log=log):
 def efun_3ds_verify(code, minutes=5, log=log):
     """查询 3DS 验证码"""
     try:
-        resp = requests.post(
+        status, data = _http_request(
+            "POST",
             f"{EFUNCARD_API}/3ds/verify",
             headers={
                 "Authorization": f"Bearer {EFUNCARD_TOKEN}",
                 "Content-Type": "application/json",
             },
-            json={"code": code, "minutes": minutes},
+            json_body={"code": code, "minutes": minutes},
             timeout=30,
-            verify=False,
         )
-        if resp.status_code != 200 or not resp.text.strip():
-            log(f"3DS API 响应异常: HTTP {resp.status_code}, body='{resp.text[:100]}'", "warn")
+        if status != 200:
+            log(f"3DS API 响应异常: HTTP {status}, body='{str(data)[:100]}'", "warn")
             return None
-        try:
-            data = resp.json()
-        except (ValueError, requests.exceptions.JSONDecodeError):
-            log(f"3DS API 返回非 JSON: '{resp.text[:100]}'", "warn")
+        if not isinstance(data, dict):
+            log(f"3DS API 返回非 JSON: '{str(data)[:100]}'", "warn")
             return None
         if data.get("success"):
             verifications = data["data"].get("verifications", [])

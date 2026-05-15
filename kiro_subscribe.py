@@ -8,10 +8,12 @@ API 流程:
 1. POST /listAvailableSubscriptions → 获取可用套餐（含 subscriptionType）
 2. POST /CreateSubscriptionToken → 获取一次性 Stripe 支付 URL (encodedVerificationUrl)
 
-依赖: requests
+依赖: curl_cffi (优先) / requests (回退)
 """
 import json
 import uuid
+import urllib.request
+import urllib.error
 import requests
 from datetime import datetime
 
@@ -33,6 +35,57 @@ def _headers(access_token):
     }
 
 
+def _aws_post(url, payload, headers, timeout=30):
+    """
+    POST AWS 端点：优先用 curl_cffi (Chrome120 指纹) 绕过 SSL 握手限制，
+    失败时依次回退 requests / urllib。返回 (status_code, json_or_text)。
+    某些网络环境下原生 Python TLS 会被拦截，必须用浏览器指纹才能通信。
+    """
+    body = json.dumps(payload).encode()
+    last_err = None
+
+    # 1. curl_cffi（首选）
+    try:
+        from curl_cffi import requests as _creq
+        r = _creq.post(url, json=payload, headers=headers,
+                       timeout=timeout, impersonate="chrome120", verify=True)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, r.text
+    except ImportError:
+        pass
+    except Exception as e:
+        last_err = e
+
+    # 2. requests
+    try:
+        r = requests.post(url, json=payload, headers=headers,
+                          timeout=timeout, verify=False)
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, r.text
+    except Exception as e:
+        last_err = e
+
+    # 3. urllib 兜底
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            try:
+                return resp.status, json.loads(resp.read())
+            except Exception:
+                return resp.status, ""
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode())
+        except Exception:
+            return e.code, ""
+    except Exception as e:
+        raise last_err or e
+
+
 def list_available_subscriptions(access_token, profile_arn, log=print):
     """
     获取可用订阅套餐列表。
@@ -45,10 +98,8 @@ def list_available_subscriptions(access_token, profile_arn, log=print):
 
     log("查询可用订阅套餐...", "info")
     try:
-        resp = requests.post(url, json=payload, headers=_headers(access_token),
-                             timeout=30, verify=False)
-        if resp.status_code == 200:
-            data = resp.json()
+        status, data = _aws_post(url, payload, _headers(access_token), timeout=30)
+        if status == 200 and isinstance(data, dict):
             plans = data.get("subscriptionPlans", [])
             disclaimer = data.get("disclaimer", [])
             log(f"获取到 {len(plans)} 个套餐", "ok")
@@ -61,9 +112,9 @@ def list_available_subscriptions(access_token, profile_arn, log=print):
                 log(f"  [{sub_type}] {title} - {amount} {currency}", "dbg")
             return {"ok": True, "data": data, "plans": plans, "disclaimer": disclaimer}
         else:
-            error_body = resp.text[:500]
-            log(f"查询套餐失败: HTTP {resp.status_code} - {error_body}", "error")
-            return {"ok": False, "error": {"status": resp.status_code, "body": error_body}}
+            error_body = str(data)[:500]
+            log(f"查询套餐失败: HTTP {status} - {error_body}", "error")
+            return {"ok": False, "error": {"status": status, "body": error_body}}
     except Exception as e:
         log(f"查询套餐异常: {e}", "error")
         return {"ok": False, "error": {"message": str(e)}}
@@ -98,29 +149,27 @@ def create_subscription_token(access_token, profile_arn, subscription_type,
 
     log(f"创建订阅 Token (type={subscription_type})...", "info")
     try:
-        resp = requests.post(url, json=payload, headers=_headers(access_token),
-                             timeout=30, verify=False)
-        if resp.status_code == 200:
-            data = resp.json()
+        status, data = _aws_post(url, payload, _headers(access_token), timeout=30)
+        if status == 200 and isinstance(data, dict):
             encoded_url = data.get("encodedVerificationUrl", "")
-            status = data.get("status", "")
+            sub_status = data.get("status", "")
             token = data.get("token", "")
             if encoded_url:
-                log(f"获取支付 URL 成功 (status={status})", "ok")
+                log(f"获取支付 URL 成功 (status={sub_status})", "ok")
                 log(f"[重要] 支付 URL (一次性): {encoded_url}", "warn")
             else:
-                log(f"响应中无 encodedVerificationUrl, status={status}", "warn")
+                log(f"响应中无 encodedVerificationUrl, status={sub_status}", "warn")
             return {
                 "ok": True,
                 "url": encoded_url,
                 "token": token,
-                "status": status,
+                "status": sub_status,
                 "raw": data,
             }
         else:
-            error_body = resp.text[:500]
-            log(f"创建订阅 Token 失败: HTTP {resp.status_code} - {error_body}", "error")
-            return {"ok": False, "error": {"status": resp.status_code, "body": error_body}}
+            error_body = str(data)[:500]
+            log(f"创建订阅 Token 失败: HTTP {status} - {error_body}", "error")
+            return {"ok": False, "error": {"status": status, "body": error_body}}
     except Exception as e:
         log(f"创建订阅 Token 异常: {e}", "error")
         return {"ok": False, "error": {"message": str(e)}}
